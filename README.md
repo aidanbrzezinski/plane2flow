@@ -235,9 +235,21 @@ good board and says so on `/api/health` — the board never goes blank.
 Nothing in the container writes to Plane. `POST /api/refresh` exists but returns
 404 unless `PF_REFRESH_TOKEN` is set, and even then it only re-reads.
 
-The port binds to `127.0.0.1:8412` so the reverse proxy is the only way in. Point
-Nginx Proxy Manager at it and it lands under `*.lokislair.com` like everything
-else.
+The port binds to `127.0.0.1:8412` by default, so nothing off this host can
+reach it.
+
+**If your reverse proxy runs somewhere else, that includes the proxy.** Nginx
+Proxy Manager in its own LXC has its own network namespace; loopback on the
+Docker host is not reachable from it. Set `PF_BIND` in `.env` to the Docker
+host's LAN address (or `0.0.0.0`) and point the proxy at
+`http://<docker-host>:8412`.
+
+To look at it without changing anything, tunnel instead:
+
+```bash
+ssh -L 8412:127.0.0.1:8412 root@<docker-host>
+# then browse to http://localhost:8412
+```
 
 ### Offline fallback
 

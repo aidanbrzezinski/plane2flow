@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -59,6 +60,30 @@ CFG = {
 }
 
 
+def _progress(phase: str):
+    """Report a slow phase to the log and to /api/health. At 55 requests a
+    minute a first poll takes minutes; without this it is indistinguishable
+    from a hang."""
+    def cb(done: int, total: int, cached: int) -> None:
+        S.progress = {"phase": phase, "done": done, "total": total,
+                      "cached": cached}
+        # relation ticks arrive in tens, history ticks one at a time; 20 lands
+        # on both without spamming
+        if done == total or done % 20 == 0:
+            eta = ""
+            if S.started_at and done:
+                per = (time.time() - S.started_at) / done
+                left = round(per * (total - done))
+                if left > 5:
+                    eta = f", ~{left}s left"
+            log(f"poll: {phase} {done}/{total} ({cached} cached{eta})")
+    return cb
+
+
+def log(msg: str) -> None:
+    print(f"[plane2flow] {msg}", flush=True)
+
+
 class State:
     graph: Graph | None = None
     html: str = ""
@@ -68,6 +93,8 @@ class State:
     last_error: str = ""
     refreshing: bool = False
     last_manual: float = 0.0
+    progress: dict = {"phase": "idle", "done": 0, "total": 0, "cached": 0}
+    started_at: float = 0.0
     hygiene_note: str = ""
 
 
@@ -112,7 +139,7 @@ def _review_rules(g: Graph):
             CFG["base_url"], CFG["api_key"], CFG["workspace"], CFG["project"],
             done_uids, insecure=CFG["insecure"], workers=CFG["workers"],
             rate=CFG["rate"], cache_path=str(DATA / "relations-cache.json"),
-            stamps=g.stamps)
+            stamps=g.stamps, progress=_progress("history"))
     except PlaneError as exc:
         return None, (
             "The &ldquo;Done without passing Review&rdquo; check could not run: "
@@ -159,6 +186,8 @@ def build() -> None:
     if S.refreshing:
         return
     S.refreshing = True
+    S.started_at = time.time()
+    S.progress = {"phase": "starting", "done": 0, "total": 0, "cached": 0}
     try:
         missing = [k for k in ("base_url", "api_key", "workspace", "project")
                    if not CFG[k]]
@@ -166,10 +195,13 @@ def build() -> None:
         source = ""
         if not missing:
             try:
+                log(f"poll: connecting to {CFG['base_url']} "
+                    f"({CFG['workspace']}/{CFG['project']})")
                 g = load_api(CFG["base_url"], CFG["api_key"], CFG["workspace"],
                              CFG["project"], insecure=CFG["insecure"],
                              workers=CFG["workers"], rate=CFG["rate"],
-                             cache_path=str(DATA / "relations-cache.json"))
+                             cache_path=str(DATA / "relations-cache.json"),
+                             progress=_progress("relations"))
                 source = f"plane:{CFG['workspace']}/{CFG['project']}"
                 S.last_error = ""
             except PlaneError as exc:
@@ -207,8 +239,14 @@ def build() -> None:
         S.graph, S.html, S.payload = g, html, payload
         S.fetched_at, S.source = now, source
         _cache_write(g, html, payload, source)
+        st = g.stats()
+        log(f"poll: done in {time.time() - S.started_at:.0f}s — "
+            f"{st['items']} items, {st['edges']} dependencies "
+            f"({st['edges'] - st['rollup']} in Plane + {st['rollup']} rollups), "
+            f"{st['blocked']} blocked, {st['conflicts']} date conflicts")
     finally:
         S.refreshing = False
+        S.progress = {"phase": "idle", "done": 0, "total": 0, "cached": 0}
 
 
 async def _loop() -> None:
@@ -224,6 +262,16 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
 
+
+class _QuietHealth(logging.Filter):
+    """The container healthcheck hits /api/health every minute forever. Logging
+    it buries everything that matters in `docker compose logs`."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/api/health" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietHealth())
 
 app = FastAPI(title="plane2flow", version="1.0.0",
               description="Read-only dependency view of a Plane project.",
@@ -362,6 +410,7 @@ def health() -> JSONResponse:
     age = time.time() - S.fetched_at if S.fetched_at else None
     stale = age is None or age > REFRESH * 3
     body = {"ok": not stale and bool(S.payload), "stale": stale,
+            "progress": S.progress if S.refreshing else None,
             "items": len((S.payload or {}).get("items", [])),
             "last_error": S.last_error or None,
             "refreshing": S.refreshing,

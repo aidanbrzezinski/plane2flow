@@ -19,7 +19,10 @@ services:
       # PF_FALLBACK_CSV at /fallback/export.csv
       # - ./fallback:/fallback:ro
     ports:
-      - "127.0.0.1:8412:8000"
+      # Loopback by default. If your reverse proxy runs on ANOTHER host or LXC
+      # it cannot reach loopback either -- set PF_BIND in .env to this box's LAN
+      # address (or 0.0.0.0) so the proxy can get to it.
+      - "${PF_BIND:-127.0.0.1}:${PF_PORT:-8412}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4).status==200 else 1)"]
       interval: 60s
