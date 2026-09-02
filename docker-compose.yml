@@ -1,0 +1,30 @@
+services:
+  plane2flow:
+    build: .
+    image: plane2flow:1.0.0
+    container_name: plane2flow
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PF_DATA_DIR: /data
+      PF_REFRESH_SECONDS: ${PF_REFRESH_SECONDS:-300}
+      PF_TITLE: ${PF_TITLE:-EV27 dependency flow}
+      PF_SUBTITLE: ${PF_SUBTITLE:-}
+    volumes:
+      - plane2flow-data:/data
+      # optional offline fallback: drop a CSV export here and point
+      # PF_FALLBACK_CSV at /fallback/export.csv
+      # - ./fallback:/fallback:ro
+    ports:
+      - "127.0.0.1:8412:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4).status==200 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  plane2flow-data:
