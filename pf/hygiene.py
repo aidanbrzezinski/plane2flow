@@ -88,6 +88,18 @@ def run(g: Graph, review_skipped: set[str] | None = None,
             if uid in g.items:
                 r.items.append((uid, "no Review step in this item's history"))
 
+    r = rule("blocked_state_clear", "Marked Blocked, but nothing blocks it",
+             "warning",
+             "The item sits in the Blocked state while every upstream item is "
+             "finished. Either it is waiting on something nobody linked, or it "
+             "was unblocked and never moved on.")
+    for uid, it in g.items.items():
+        if it.state == "Blocked" and not g.is_blocked(uid):
+            n = len(it.blocked_by)
+            r.items.append((uid, "no unfinished blockers" +
+                            (f" ({n} linked, all done)" if n
+                             else " and nothing linked at all")))
+
     # ---- in-flight problems ---------------------------------------------
     r = rule("blocked_in_progress", "Being worked on while blocked", "warning",
              "Someone is spending time on this while an upstream item is "

@@ -314,9 +314,10 @@ def _legend(states: list[str]) -> str:
         for s in states)
     return ('<div class="legend">' + sw +
             '<span class="sw" style="background:#d03b3b;color:#fff">'
-            '⛔ blocked</span>'
+            '⛔ blocked = waiting on unfinished work (computed, '
+            'not the Plane state)</span>'
             '<span class="sw" style="background:#0ca30c;color:#fff">'
-            '● ready now</span>'
+            '● ready now = nothing unfinished upstream</span>'
             '<span class="sw" style="border-style:dashed">'
             '⇠ dashed red = dependency loop</span>'
             '<span class="sw">↦ thin arrow = sub-item rolling up to its '
@@ -497,7 +498,9 @@ def standup_print(g: Graph) -> str:
 
 
 def render(g: Graph, title: str, subtitle: str = "",
-           source_note: str = "", rules=None, hygiene_note: str = "") -> str:
+           source_note: str = "", rules=None, hygiene_note: str = "",
+           live: bool = False, fetched_at: float = 0.0,
+           refresh_seconds: int = 300) -> str:
     lay = layout_banded(g)
     st = g.stats()
     states = [s for s in CANON_STATES if st["by_state"].get(s)]
@@ -521,6 +524,12 @@ def render(g: Graph, title: str, subtitle: str = "",
                       for a, b in g.schedule_conflicts()],
         "width": lay["width"], "height": lay["height"],
         "theme": T.theme_payload(),
+        "generatedAt": now.timestamp(),
+        "sourceNote": source_note,
+        "live": live,
+        "fetchedAt": fetched_at or now.timestamp(),
+        "refreshSeconds": refresh_seconds,
+        "doneStates": ["Done", "Dropped", "Cancelled"],
     }
 
     assignees = sorted({a for i in g.items.values() for a in i.assignees})
@@ -645,6 +654,8 @@ def render(g: Graph, title: str, subtitle: str = "",
     <span class="warn">{st["blocked"]} blocked</span> ·
     {st["ready"]} ready{f' · <span class="warn">{st["conflicts"]} date conflicts</span>' if st["conflicts"] else ""}</span>
   <button id="b-fit" class="board-only" title="Fit to window (f)">Fit</button>
+  <span id="sync" class="sync" title="{e(source_note)}"></span>
+  <button id="b-refresh" hidden title="Re-read Plane now">Refresh</button>
   <button id="b-theme" title="Toggle theme">◐</button>
   <button id="b-print">Print</button>
 </header>

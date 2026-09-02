@@ -202,7 +202,19 @@ curl -s localhost:8412/api/health | jq
 ```
 
 Polls Plane every `PF_REFRESH_SECONDS` (default 300), renders the board, caches
-it to a volume. If Plane is down or the token expires it keeps serving the last
+it to a volume.
+
+The served board carries a **sync indicator** and a **Refresh** button. The same
+HTML works either way and works out which it is: opened over http it asks
+`/api/health`, shows how long ago Plane was last read, and offers Refresh;
+opened straight off disk it just says how old the snapshot is and hides the
+button. If the server re-polls while you have the page open, a *"Plane has newer
+data — Reload"* banner appears rather than the view changing under you.
+
+Refresh only *re-reads* Plane, so it is open by default and throttled rather
+than locked: `PF_REFRESH_MIN_SECONDS` (default 20) is the minimum gap between
+manual refreshes, which is what stops the button from eating the 60/min API
+budget. Set `PF_REFRESH_TOKEN` to require a token as well. If Plane is down or the token expires it keeps serving the last
 good board and says so on `/api/health` — the board never goes blank.
 
 ### Endpoints — all read-only
@@ -237,13 +249,17 @@ serving nothing.
 
 ## Reading the chart
 
-- **Colour = state**, on a single-hue ramp that gets darker as work progresses.
-  It's one hue on purpose: the steps stay distinguishable when the thing comes
-  out of a black-and-white printer.
+- **Colour = state, using the EV27 workspace's own state colours**, so a box on
+  the board reads the same as the item does in Plane: Backlog and Ready grey,
+  In Progress amber, Blocked crimson, Review pale blue, Done green, Dropped
+  slate.
 - **Every box also carries its state as text and a glyph**, so nothing depends on
-  colour alone.
-- **Red left bar + ⛔ = blocked**: something it waits on isn't Done. That's
-  computed, not a Plane state — an item can be "Ready" in Plane and still blocked.
+  colour alone. That is now load-bearing rather than belt-and-braces — see below.
+- **Red left bar + ⛔ = blocked**: something it waits on isn't Done. This is
+  **computed, and separate from the Blocked state** somebody set in Plane. An
+  item can sit in Blocked with nothing actually blocking it (there is a hygiene
+  rule for exactly that), or sit in In Progress while genuinely blocked. Where
+  the chip and the flag disagree, the disagreement is the finding.
 - **Green ● = ready now**: no unfinished upstream work.
 - **Dashed red arrow = a dependency loop.** Two items waiting on each other.
   Nothing is hidden to make the layout tidy; a loop is a planning bug and it
@@ -252,6 +268,25 @@ serving nothing.
   `Hide done`.
 
 Keyboard: `f` fits to window, `Esc` clears a selection. Scroll to zoom, drag to pan.
+
+### Two consequences of matching Plane's colours
+
+Both deliberate, both worth knowing:
+
+- **Backlog and Ready are the same hex in Plane** (`#60646C`). Two states that
+  paint identically cannot be told apart on a wall chart, so Ready is lightened
+  within the same grey. Set `READY_MATCHES_PLANE = True` in `pf/theme.py` to use
+  the exact workspace hex instead.
+- **Black-and-white printing no longer separates every state by shade.** On the
+  0–255 grey scale, Blocked (91) sits beside Backlog (100), and Dropped (164)
+  beside In Progress (167). The written state name and the glyph carry the
+  meaning on paper; colour alone does not. The previous single-hue ramp printed
+  as seven distinct greys; these are the workspace's hues, and hues do not.
+
+Dark mode lightens only the greys — `#60646C` sits at 2.93:1 on the dark
+surface, under the 3:1 floor, so it steps up until it clears. The other five are
+used exactly as given. Ink on each chip is picked by measured contrast, not by
+eye.
 
 ---
 

@@ -40,6 +40,10 @@ FALLBACK_CSV = os.getenv("PF_FALLBACK_CSV", "")
 REFRESH_TOKEN = os.getenv("PF_REFRESH_TOKEN", "")
 # block: a parent cannot finish until every child is done. contain / ignore.
 PARENT_MODE = os.getenv("PF_PARENT_MODE", "block")
+# Manual refresh is read-only toward Plane, so it is open by default and
+# throttled instead of locked. Set PF_REFRESH_TOKEN to require a token too.
+REFRESH_MIN = int(os.getenv("PF_REFRESH_MIN_SECONDS", "20"))
+CHECK_HISTORY = os.getenv("PF_CHECK_HISTORY", "1").lower() not in ("0", "false", "no")
 
 CFG = {
     "base_url": os.getenv("PLANE_BASE_URL", ""),
@@ -63,6 +67,8 @@ class State:
     source: str = "none"
     last_error: str = ""
     refreshing: bool = False
+    last_manual: float = 0.0
+    hygiene_note: str = ""
 
 
 S = State()
@@ -90,6 +96,38 @@ def _payload(g: Graph) -> dict:
              for e in g.edges if e.src in g.items and e.dst in g.items]
     return {"stats": g.stats(), "items": items, "edges": edges,
             "modules": g.modules}
+
+
+def _review_rules(g: Graph):
+    """The Done-without-Review check, which needs each Done item's history."""
+    from pf import hygiene as H
+    from pf.model import normalize_state
+    from pf.sources_api import PlaneError, load_history
+
+    done_uids = [u for u, it in g.items.items() if it.state == "Done"]
+    if not done_uids:
+        return None, ""
+    try:
+        hist, why = load_history(
+            CFG["base_url"], CFG["api_key"], CFG["workspace"], CFG["project"],
+            done_uids, insecure=CFG["insecure"], workers=CFG["workers"],
+            rate=CFG["rate"], cache_path=str(DATA / "relations-cache.json"),
+            stamps=g.stamps)
+    except PlaneError as exc:
+        return None, (
+            "The &ldquo;Done without passing Review&rdquo; check could not run: "
+            + str(exc)[:160])
+    if why:
+        return None, (
+            "The &ldquo;Done without passing Review&rdquo; check is off: this "
+            "Plane instance did not return work-item history. Everything else "
+            "on this page is unaffected.")
+    skipped = set()
+    for u in done_uids:
+        seen = hist.get(u) or set()
+        if seen and not any(normalize_state(x) == "Review" for x in seen):
+            skipped.add(u)
+    return H.run(g, review_skipped=skipped), ""
 
 
 def _cache_write(g: Graph, html: str, payload: dict, source: str) -> None:
@@ -156,10 +194,18 @@ def build() -> None:
         elif PARENT_MODE == "block":
             g.add_rollup_edges()
         g.finalize()
-        html = render(g, TITLE, SUBTITLE, source)
+
+        rules, hnote = None, ""
+        if CHECK_HISTORY and source.startswith("plane:"):
+            rules, hnote = _review_rules(g)
+        S.hygiene_note = hnote
+        now = time.time()
+        html = render(g, TITLE, SUBTITLE, source, rules=rules,
+                      hygiene_note=hnote, live=True, fetched_at=now,
+                      refresh_seconds=REFRESH)
         payload = _payload(g)
         S.graph, S.html, S.payload = g, html, payload
-        S.fetched_at, S.source = time.time(), source
+        S.fetched_at, S.source = now, source
         _cache_write(g, html, payload, source)
     finally:
         S.refreshing = False
@@ -303,7 +349,7 @@ def critical_path() -> dict:
         if not r["blocks"]:
             path = longest(r["key"])
             open_ = [k for k in path if by_key[k]["state"] not in
-                     ("Done", "Cancelled")]
+                     ("Done", "Dropped", "Cancelled")]
             chains.append({"leaf": r["key"], "length": len(path),
                            "open_length": len(open_), "path": path,
                            "module": r["module"]})
@@ -317,16 +363,32 @@ def health() -> JSONResponse:
     stale = age is None or age > REFRESH * 3
     body = {"ok": not stale and bool(S.payload), "stale": stale,
             "items": len((S.payload or {}).get("items", [])),
-            "last_error": S.last_error or None, **_meta()}
+            "last_error": S.last_error or None,
+            "refreshing": S.refreshing,
+            "refresh_min_seconds": REFRESH_MIN,
+            "parent_mode": PARENT_MODE,
+            **_meta()}
     return JSONResponse(body, status_code=200 if body["ok"] else 503)
 
 
-@app.post("/api/refresh", include_in_schema=False)
-async def refresh(token: str = "") -> dict:
-    """Off unless PF_REFRESH_TOKEN is set. Still read-only toward Plane."""
-    if not REFRESH_TOKEN:
-        raise HTTPException(404)
-    if token != REFRESH_TOKEN:
+@app.post("/api/refresh")
+async def refresh(token: str = "") -> JSONResponse:
+    """Re-read Plane now. Still read-only toward Plane -- this only pulls.
+
+    Open by default because the Refresh button in the board uses it; the
+    protection is a minimum interval, not a secret. Set PF_REFRESH_TOKEN to
+    require one anyway."""
+    if REFRESH_TOKEN and token != REFRESH_TOKEN:
         raise HTTPException(403, "bad token")
+    if S.refreshing:
+        return JSONResponse({"refreshed": False, "reason": "already running",
+                             **_meta()}, status_code=202)
+    since = time.time() - S.last_manual
+    if since < REFRESH_MIN:
+        return JSONResponse(
+            {"refreshed": False, "reason": "too soon",
+             "retry_after": round(REFRESH_MIN - since, 1), **_meta()},
+            status_code=429)
+    S.last_manual = time.time()
     await asyncio.to_thread(build)
-    return {"refreshed": True, **_meta()}
+    return JSONResponse({"refreshed": True, **_meta()})

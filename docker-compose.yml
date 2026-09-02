@@ -10,6 +10,9 @@ services:
       PF_REFRESH_SECONDS: ${PF_REFRESH_SECONDS:-300}
       PF_TITLE: ${PF_TITLE:-EV27 dependency flow}
       PF_SUBTITLE: ${PF_SUBTITLE:-}
+      PF_PARENT_MODE: ${PF_PARENT_MODE:-block}
+      PF_CHECK_HISTORY: ${PF_CHECK_HISTORY:-1}
+      PF_REFRESH_MIN_SECONDS: ${PF_REFRESH_MIN_SECONDS:-20}
     volumes:
       - plane2flow-data:/data
       # optional offline fallback: drop a CSV export here and point
@@ -22,7 +25,9 @@ services:
       interval: 60s
       timeout: 5s
       retries: 3
-      start_period: 45s
+      # the first poll is paced against Plane's 60/min limit; a large
+      # project takes minutes before /api/health goes green
+      start_period: 420s
     security_opt:
       - no-new-privileges:true
 

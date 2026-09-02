@@ -7,7 +7,8 @@ from typing import Iterable
 
 # Aidan's SOP state machine. Anything Plane reports that isn't in here gets
 # mapped by its state *group* (backlog/unstarted/started/completed/cancelled).
-CANON_STATES = ["Backlog", "Ready", "In Progress", "Review", "Done", "Cancelled"]
+CANON_STATES = ["Backlog", "Ready", "In Progress", "Blocked", "Review",
+                "Done", "Dropped"]
 
 _STATE_ALIASES = {
     "backlog": "Backlog",
@@ -19,6 +20,10 @@ _STATE_ALIASES = {
     "inprogress": "In Progress",
     "started": "In Progress",
     "doing": "In Progress",
+    "blocked": "Blocked",
+    "on hold": "Blocked",
+    "onhold": "Blocked",
+    "stuck": "Blocked",
     "review": "Review",
     "in review": "Review",
     "qa": "Review",
@@ -26,10 +31,11 @@ _STATE_ALIASES = {
     "completed": "Done",
     "complete": "Done",
     "closed": "Done",
-    "cancelled": "Cancelled",
-    "canceled": "Cancelled",
-    "wontfix": "Cancelled",
-    "duplicate": "Cancelled",
+    "dropped": "Dropped",
+    "cancelled": "Dropped",
+    "canceled": "Dropped",
+    "wontfix": "Dropped",
+    "duplicate": "Dropped",
 }
 
 # [MODULE] prefix convention from the EV27 Plane SOP.
@@ -98,7 +104,9 @@ class Item:
 
     @property
     def done(self) -> bool:
-        return self.state in ("Done", "Cancelled")
+        """Finished as far as anything downstream is concerned. Dropped counts:
+        nothing waits on work that is never happening."""
+        return self.state in ("Done", "Dropped", "Cancelled")
 
     @property
     def label(self) -> str:

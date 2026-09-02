@@ -104,6 +104,31 @@ header.bar {
   font-size: 13px; color: var(--ink2); cursor: pointer; user-select: none;
 }
 .counts { font-size: 12.5px; color: var(--muted); }
+.sync {
+  font-size: 12px; color: var(--muted); white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.sync::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--good); flex: 0 0 auto;
+}
+.sync.stale::before { background: var(--warning); }
+.sync.offline::before { background: var(--muted); }
+.sync.err::before { background: var(--critical); }
+#b-refresh[aria-busy="true"] { opacity: 0.6; pointer-events: none; }
+.newdata {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 30; background: var(--ink); color: var(--surface);
+  border-radius: 999px; padding: 7px 8px 7px 14px; font-size: 12.5px;
+  display: flex; align-items: center; gap: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+}
+.newdata button {
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 0; border-radius: 999px; padding: 3px 11px;
+  background: var(--surface); color: var(--ink);
+}
+.newdata[hidden] { display: none !important; }
 .counts b { color: var(--ink); font-weight: 600; }
 .counts .warn { color: var(--critical); font-weight: 600; }
 

@@ -13,6 +13,11 @@
   var panel = document.getElementById("panel");
 
   /* ---- adjacency ------------------------------------------------------ */
+  // "finished" is defined once, server-side, and shipped with the data --
+  // Dropped counts, because nothing waits on work that is never happening.
+  var DONE_STATES = DATA.doneStates || ["Done", "Dropped", "Cancelled"];
+  function isDone(state) { return DONE_STATES.indexOf(state) >= 0; }
+
   var conflicts = {};
   (DATA.conflicts || []).forEach(function (c) {
     (conflicts[c.blocked] = conflicts[c.blocked] || []).push(c.blocker);
@@ -157,7 +162,7 @@
   function showPanel(uid, nUp, nDn) {
     var it = items[uid];
     var blocked = up[uid].some(function (b) {
-      return items[b] && items[b].state !== "Done" && items[b].state !== "Cancelled";
+      return items[b] && !isDone(items[b].state);
     });
     panel.innerHTML =
       '<button class="close" aria-label="Close">&times;</button>' +
@@ -166,7 +171,7 @@
       '<div style="margin-top:8px">' + chipFor(it.state) +
       (blocked ? ' <span class="pill" style="background:' +
         DATA.theme.status.critical + ';color:#fff">&#9940; blocked</span>' :
-        (it.state === "Done" || it.state === "Cancelled" ? "" :
+        (isDone(it.state) ? "" :
           ' <span class="pill" style="background:' + DATA.theme.status.good +
           ';color:#fff">&#9679; ready</span>')) + "</div>" +
       "<dl>" +
@@ -225,12 +230,12 @@
     if (f.state && it.state !== f.state) return false;
     if (f.cycle && it.cycle !== f.cycle) return false;
     if (f.assignee && it.assignees.indexOf(f.assignee) < 0) return false;
-    if (f.hideDone && (it.state === "Done" || it.state === "Cancelled")) return false;
+    if (f.hideDone && isDone(it.state)) return false;
     if (f.blockedOnly) {
       var b = up[uid].some(function (x) {
-        return items[x] && items[x].state !== "Done" && items[x].state !== "Cancelled";
+        return items[x] && !isDone(items[x].state);
       });
-      if (!b || it.state === "Done" || it.state === "Cancelled") return false;
+      if (!b || isDone(it.state)) return false;
     }
     if (f.q) {
       var hay = (it.key + " " + it.title + " " + it.module + " " +
@@ -316,7 +321,7 @@
       if (dn[k].length) return;              // only chain ends
       var path = longest(k, {});
       var open = path.filter(function (x) {
-        return items[x].state !== "Done" && items[x].state !== "Cancelled";
+        return !isDone(items[x].state);
       }).length;
       if (!best || open > best.open || (open === best.open &&
           path.length > best.path.length)) {
@@ -359,7 +364,7 @@
       " still open</div>" +
       "<ul>" + best.path.map(function (k) {
         var it = items[k];
-        var done = it.state === "Done" || it.state === "Cancelled";
+        var done = isDone(it.state);
         return '<li><a href="#" data-goto="' + k + '"><code>' +
           esc(it.key) + "</code></a> " + esc(it.title) +
           (done ? " <em>(done)</em>" : " <strong>(" + esc(it.state) +
@@ -369,6 +374,112 @@
       "Nothing downstream of this chain can finish sooner than it does.</p>";
     panel.hidden = false;
   });
+
+  /* ---- sync status -----------------------------------------------------
+     The same HTML is served by the container and opened straight off disk,
+     so the page works out which it is instead of being told. Over http it
+     asks /api/health and offers a Refresh button; on file:// it just says
+     how old the snapshot is. */
+  var syncEl = document.getElementById("sync");
+  var refreshBtn = document.getElementById("b-refresh");
+  var live = false;
+  var lastFetched = DATA.generatedAt || 0;      // epoch seconds
+  var banner = null;
+
+  function ago(seconds) {
+    if (seconds < 45) return "just now";
+    var m = Math.round(seconds / 60);
+    if (m < 60) return m + " min ago";
+    var h = Math.round(m / 60);
+    if (h < 36) return h + (h === 1 ? " hour ago" : " hours ago");
+    return Math.round(h / 24) + " days ago";
+  }
+  function paintSync(state, text) {
+    if (!syncEl) return;
+    syncEl.className = "sync" + (state ? " " + state : "");
+    syncEl.textContent = text;
+  }
+  function tick() {
+    var age = Date.now() / 1000 - lastFetched;
+    if (!live) {
+      paintSync("offline", "generated " + ago(age));
+      return;
+    }
+    var limit = (DATA.refreshSeconds || 300) * 2.5;
+    paintSync(age > limit ? "stale" : "", "synced " + ago(age));
+  }
+
+  function showBanner() {
+    if (banner) { banner.hidden = false; return; }
+    banner = document.createElement("div");
+    banner.className = "newdata";
+    banner.innerHTML = "Plane has newer data <button>Reload</button>";
+    banner.querySelector("button").addEventListener("click", function () {
+      location.reload();
+    });
+    (document.querySelector("main") || document.body).appendChild(banner);
+  }
+
+  function pollHealth(afterRefresh) {
+    return fetch("api/health", { cache: "no-store" })
+      .then(function (r) { return r.json().then(function (j) {
+        return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        var b = res.body || {};
+        live = true;
+        if (refreshBtn) refreshBtn.hidden = false;
+        if (b.fetched_at) {
+          // the server re-polled after this page was rendered
+          if (b.fetched_at > (DATA.generatedAt || 0) + 1 && !afterRefresh) {
+            showBanner();
+          }
+          lastFetched = b.fetched_at;
+        }
+        if (b.last_error) paintSync("err", "sync error");
+        else tick();
+        return b;
+      })
+      .catch(function () {
+        // opened from disk, or the server went away: fall back to snapshot age
+        live = false;
+        if (refreshBtn) refreshBtn.hidden = true;
+        tick();
+        return null;
+      });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () {
+      refreshBtn.setAttribute("aria-busy", "true");
+      var was = DATA.generatedAt || 0;
+      paintSync("", "syncing…");
+      fetch("api/refresh", { method: "POST" })
+        .then(function (r) { return r.json().catch(function () { return {}; })
+          .then(function (j) { return { status: r.status, body: j }; }); })
+        .then(function (res) {
+          if (res.status === 429) {
+            var wait = Math.ceil(res.body.retry_after || 10);
+            paintSync("stale", "just synced, wait " + wait + "s");
+            setTimeout(tick, wait * 1000);
+            return;
+          }
+          // the board is rendered server-side, so a new poll means new HTML
+          return pollHealth(true).then(function (b) {
+            if (b && b.fetched_at > was + 1) location.reload();
+            else paintSync("", "no change");
+          });
+        })
+        .catch(function () { paintSync("err", "refresh failed"); })
+        .finally(function () { refreshBtn.removeAttribute("aria-busy"); });
+    });
+  }
+
+  tick();
+  setInterval(tick, 20000);
+  if (/^https?:$/.test(location.protocol)) {
+    pollHealth(false);
+    setInterval(function () { pollHealth(false); }, 30000);
+  }
 
   /* ---- tabs ------------------------------------------------------------ */
   var tabs = document.querySelectorAll('.tabs [role="tab"]');
